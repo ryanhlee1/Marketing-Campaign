@@ -1,0 +1,1218 @@
+---
+title: "PSTAT 131 - Final Project"
+author: "Ryan Lee"
+date: "2023-01-17"
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(tidyr)
+library(ggplot2)
+library(ggExtra)
+library(cluster)
+library(ggridges)
+library(factoextra)
+library(scales)
+library(caret)
+library(glmnet)
+library(ISLR)
+library(dplyr)
+library(rsample)
+library(gbm)
+library(ggstatsplot)
+library(randomForest)
+library(lares)
+library(tree)
+library(ROCR)
+```
+# Background Information
+Customer segments can be profiled based on different attributes:
+
+1)  Segmenting customers based on *who they are (demographic characteristics)*:
+
+-   Age
+-   Geography
+-   Income
+-   Relationship Status
+-   Family
+-   Job Type
+-   etc.
+
+2)  Segmenting customers based on *what they do (lifestyle/behavioral characteristics)*:
+
+-   Average spend
+-   Tenure (How long customer stays with you)
+-   Product purchase history
+-   Time elapsed since last purchase
+-   etc.
+
+Customer segments are not limited to just one attribute; they can be based on a combination of different variables.
+
+# Goal of Project
+1\. Group our customers based on demographic, lifestyle and behavioral data
+
+2\. Create classification models to predict which customers will respond to marketing campaigns
+
+# Overview of the dataset
+```{r}
+# Loading the data
+data = read.csv('marketing_campaign.csv', sep = '\t')
+head(data)
+```
+
+This data is collected from a marketing campaign from an unspecified company.
+
+Our data set includes 2240 observations and 29 variables. The variables can be classified in 4 categories: People, Products, Promotion, and Place. Respectively, these describe customer demographic, amount spent on each type of product, campaign engagement, and where purchases were made.
+
+Here is the link to the data set on Kaggle: <https://www.kaggle.com/imakash3011/customer-personality-analysis>
+
+### Handling Missing Values
+```{r}
+apply(is.na(data), 2, sum)
+```
+
+From the output above, I can see that the Income column contains 24     missing values. The rest of the columns contain no missing values.
+
+Since 24 missing values is small compared to our total 2240 rows in our dataset, I am going to remove these rows that contain missing values:
+
+```{r}
+data <- data %>% filter(complete.cases(data))
+head(data)
+```
+
+```{r}
+count(data)
+```
+
+Now, I have 2216 observations in our dataset.
+
+# Overview of research questions
+The goal for this project is to use machine learning models on a set of marketing data to assist with customer segmentation and prediction of a customer's response to a firm's marketing campaigns and to group the customers based on demographic, lifestyle and behavioral data. I believe that using a classification approach would be the most beneficial in answering my questions. The goal of my model is a combination of descriptive and inferential. 
+
+### Description of Each Attribute
+Variables that are of interest:
+
+**People**
+
+-   ID: Customer's unique identifier
+
+-   Year_Birth: Customer's birth year
+
+-   Education: Customer's education level
+
+-   Marital_Status: Customer's marital status
+
+-   Income: Customer's yearly household income
+
+-   Kidhome: Number of children in customer's household
+
+-   Teenhome: Number of teenagers in customer's household
+
+-   Dt_Customer: Date of customer's enrollment with the company
+
+-   Recency: Number of days since customer's last purchase
+
+-   Complain: 1 if the customer complained in the last 2 years, 0 otherwise
+
+**Products**
+
+-   MntWines: Amount spent on wine in last 2 years
+
+-   MntFruits: Amount spent on fruits in last 2 years
+
+-   MntMeatProducts: Amount spent on meat in last 2 years
+
+-   MntFishProducts: Amount spent on fish in last 2 years
+
+-   MntSweetProducts: Amount spent on sweets in last 2 years
+
+-   MntGoldProds: Amount spent on gold in last 2 years
+
+**Promotion**
+
+-   NumDealsPurchases: Number of purchases made with a discount
+
+-   AcceptedCmp1: 1 if customer accepted the offer in the 1st campaign, 0 otherwise
+
+-   AcceptedCmp2: 1 if customer accepted the offer in the 2nd campaign, 0 otherwise
+
+-   AcceptedCmp3: 1 if customer accepted the offer in the 3rd campaign, 0 otherwise
+
+-   AcceptedCmp4: 1 if customer accepted the offer in the 4th campaign, 0 otherwise
+
+-   AcceptedCmp5: 1 if customer accepted the offer in the 5th campaign, 0 otherwise
+
+-   Response: 1 if customer accepted the offer in the last campaign, 0 otherwise
+
+**Place**
+
+-   NumWebPurchases: Number of purchases made through the company's website
+
+-   NumCatalogPurchases: Number of purchases made using a catalogue
+
+-   NumStorePurchases: Number of purchases made directly in stores
+
+-   NumWebVisitsMonth: Number of visits to company's website in the last month
+
+
+## Feature Engineering
+
+Here is the total count of each category under "Education":
+
+```{r}
+count(data, data["Education"], sort = TRUE)
+```
+
+```{r}
+ggplot(data, aes(Education, fill = Education)) +
+  labs(title = 'Counts for Each Education Level', x = "Education Level") +
+  geom_bar()
+```
+
+Let's simplify Education by creating only 3 unique values in this column:
+
+```{r}
+# convert "2n Cycle" and "Basic" to "Undergraduate"
+data["Education"][data["Education"] == "2n Cycle" | 
+                    data["Education"] == "Basic"] <- "Undergraduate"
+# convert "Graduation" to "Graduate"
+data["Education"][data["Education"] == "Graduation"] <- "Graduate"
+# convert "Master" and PhD to "Postgrad"
+data["Education"][data["Education"] == "Master" | data["Education"] == "PhD"] <- "Postgrad"
+# print new counts for Marital_Status column
+count(data, data["Education"], sort = TRUE)
+```
+
+Let's see how Education relates to Income:
+
+```{r}
+# calculate the mean income for each Education Level
+plotdata <- data %>%
+  group_by(Education) %>%
+  summarize(mean_income = mean(Income))
+
+# plot mean incomes
+ggplot(plotdata, 
+       aes(x = factor(Education,
+                      labels = c("Undergraduate", "Graduate", "Postgraduate")),
+           y = mean_income)) +
+  geom_bar(stat = "identity", fill = "cornflowerblue") +
+  geom_text(aes(label = dollar(mean_income)), vjust = -0.25) +
+  labs(x = "Education Level", y = "Mean Income")
+```
+
+Let's count the number of observations per category in "Martial_Status" as well:
+
+```{r}
+count(data, data["Marital_Status"], sort = TRUE)
+```
+
+Since "Absurd" and "YOLO" aren't useful to us under this feature, I am going to remove these rows:
+
+```{r}
+data <- data[!(data$Marital_Status == "YOLO" | data$Marital_Status == "Absurd"),]
+head(data)
+```
+
+Like I did with Education, let's create two unique elements in Marital_Status:
+
+```{r}
+# convert "Together" to "Married"
+data["Marital_Status"][data["Marital_Status"] == "Together"] <- "Married"
+# convert "Alone", "Divorced", and "Widow" to "Single"
+data["Marital_Status"][data["Marital_Status"] == "Alone" |
+                         data["Marital_Status"] == "Divorced" |
+                         data["Marital_Status"] == "Widow"] <- "Single"
+# print new counts for Marital_Status column
+count(data, data["Marital_Status"], sort = TRUE)
+```
+
+Assuming I got this data from 2018, let's convert birth years to age:
+
+```{r}
+data["Age"] <- 2018 - data["Year_Birth"]
+data <- data[,!(names(data) == "Year_Birth")]
+```
+
+Let's take a look at the distribution of the ages of the customers:
+
+```{r}
+ggplot(data, aes(Age)) +
+  labs(title = 'Distribution of Ages of Cusomters') +
+  geom_histogram(binwidth = 2)
+```
+
+```{r}
+sprintf("Youngest Customer: %s", min(data$Age))
+sprintf("Oldest Customer: %s", max(data$Age))
+```
+
+Our youngest customer is 22 years old and our oldest is 125. Since there seems to be a couple outliers in age in our dataset, let's remove these observations:
+
+```{r}
+# remove outliers in age
+data <- data[!(data$Age > 100),]
+```
+
+Let's continue with our feature engineering and create a column for total spending by combining all of the categories for spending:
+
+```{r}
+# Create column for total spending
+data["Total_Spending"] <- data["MntWines"] + data["MntFruits"] + data["MntMeatProducts"] + 
+                          data["MntFishProducts"] + data["MntSweetProducts"] +  
+                          data["MntGoldProds"]
+# remove individual columns for amount spent on each product
+del_amts <- c("MntWines", "MntFruits", "MntMeatProducts", "MntFishProducts", 
+              "MntSweetProducts", "MntGoldProds")
+data <- data[,!(names(data) %in% del_amts)]
+```
+
+Likewise, let's create a column for the total number of purchases by the customer:
+
+```{r}
+data["TotalNumPurchases"] <- data["NumWebPurchases"] + data["NumCatalogPurchases"] +
+                            data["NumStorePurchases"] + data["NumDealsPurchases"]
+del_NumPurchases <- c("NumWebPurchases", "NumCatalogPurchases", "NumStorePurchases",
+                      "NumDealsPurchases")
+data <- data[,!(names(data) %in% del_NumPurchases)]
+head(data)
+```
+
+Let's create a new column for the total number of accepted marketing campaigns by the customer, and a column that indicates whether a customer has accepted a campaign in the past:
+
+```{r}
+# create a new column for the total accpeted campaigns
+data["TotalAcceptedCmp"] <- data["AcceptedCmp1"] + data["AcceptedCmp2"] + 
+                            data["AcceptedCmp3"] + data["AcceptedCmp4"] + 
+                            data["AcceptedCmp5"] + data["Response"]
+```
+
+```{r}
+# create column telling us whether customer responded to any campaign
+data$AcceptedCmp <- ifelse(data$TotalAcceptedCmp > 0, 1, 0)
+```
+
+```{r}
+table(data$AcceptedCmp)
+```
+
+Now, let's explore these new variables:
+
+```{r}
+# prints distribution of customers who have accpeted a campaign
+ggplot(data, aes(x = AcceptedCmp)) + geom_bar(alpha = 0.8)
+```
+
+Let's replace the "KidHome" and "Teenhome" columns with a column representing the total number of children at home:
+
+```{r}
+# create column for total children at home
+data["Children"] <- data["Kidhome"] + data["Teenhome"]
+data <- data[,!(names(data) == "Kidhome" | names(data) == "Teenhome")]
+```
+
+Let's take a look at the Income and Total_Spending variables
+
+```{r}
+ggplot(data, aes(x = Income,
+                      y = Total_Spending, colour = AcceptedCmp)) +
+  geom_point(size = 1,
+             alpha = .7) + 
+  labs(x = "Income",
+       y = "Total Spending",
+       title = "Income vs Total Spending")
+```
+
+There seems to be one clear outlier who has far greater income than the rest of the dataset. Let's remove this observation.
+
+```{r}
+data <- data[!(data$Income == max(data$Income)),]
+```
+
+```{r}
+ggplot(data, aes(x = Income,
+                      y = Total_Spending, colour = AcceptedCmp)) +
+  geom_point(size = 1,
+             alpha = .7) + 
+  labs(x = "Income",
+       y = "Total Spending",
+       title = "Income vs Total Spending")
+```
+
+Let's inspect the remaining columns:
+
+```{r}
+unique(data["Z_CostContact"])
+```
+
+```{r}
+unique(data["Z_Revenue"])
+```
+
+Because "Z_CostContact" and "Z_Revenue" only has one unique value, let's delete it:
+
+```{r}
+data <- data[,!(names(data) == "Z_CostContact" | names(data) == "Z_Revenue")]
+head(data)
+```
+
+Delete other unimportant columns:
+
+```{r}
+# delete ID and Dt_Customer
+del_unimp <- c("ID", "Dt_Customer")
+data <- data[,!(names(data) %in% del_unimp)]
+# delete complain column
+data <- data[,!(names(data) == "Complain")]
+```
+
+Now, let's inspect our processed dataset:
+
+```{r}
+head(data)
+```
+
+Let's save this processed dataset as a new csv file:
+
+```{r}
+# save as csv file
+write.csv(data, "/Users/ryanlee/Desktop/PSTAT 131 Final Project/processed_data.csv", row.names = FALSE)
+```
+
+## Data Anlalysis
+
+```{r}
+corr_var(data, AcceptedCmp)
+```
+
+```{r}
+# calculate the mean total number of purchases amoungst customers
+plot_mean <- data %>%
+  group_by(AcceptedCmp) %>%
+  summarize(mean_num_purchases = round(mean(TotalNumPurchases), digits = 3))
+
+# plot mean total number of purchases
+ggplot(plot_mean, 
+       aes(x = factor(AcceptedCmp,
+                      labels = c("Did not accept", "Accepted")),
+           y = mean_num_purchases)) +
+  geom_bar(stat = "identity", fill = "cornflowerblue") +
+  geom_text(aes(label = mean_num_purchases, vjust = -0.25)) +
+  labs(x = "Customer Response", y = "Mean Total Number of Purchases") 
+```
+
+```{r}
+# calculate the mean total spending amoungst customers
+plot_mean <- data %>%
+  group_by(AcceptedCmp) %>%
+  summarize(mean_total_spending = round(mean(Total_Spending), digits = 3))
+
+# plot mean total number of purchases
+ggplot(plot_mean, 
+       aes(x = factor(AcceptedCmp,
+                      labels = c("Did not accept", "Accepted")),
+           y = mean_total_spending)) +
+  geom_bar(stat = "identity", fill = "cornflowerblue") +
+  geom_text(aes(label = mean_total_spending, vjust = -0.25)) +
+  labs(x = "Customer Response", y = "Mean Total Spending")
+```
+
+### Dimension Reduction 
+
+For the sake of reducing redundancy and the dimensions of the dataset as much as possible, let's remove customer responses to individual campaigns as well as the AcceptedCmp variable.
+
+```{r}
+del_accep_cmp <- c("AcceptedCmp1", "AcceptedCmp2", "AcceptedCmp3", "AcceptedCmp4", 
+                   "AcceptedCmp5", "Response", "AcceptedCmp")
+data <- data[,!(names(data) %in% del_accep_cmp)]
+head(data)
+```
+
+Let's label encode the categorical variables:
+
+```{r}
+# convert "Undergraduate" to 0
+data["Education"][data["Education"] == "Undergraduate"] <- 0
+# convert "Graduate" to 1
+data["Education"][data["Education"] == "Graduate"] <- 1
+# convert "Postgrad" to 2
+data["Education"][data["Education"] == "Postgrad"] <- 2
+# convert string values to numeric values
+data$Education <- strtoi(data$Education)
+# print table of Education values
+table(data$Education)
+```
+
+```{r}
+data$Marital_Status <- ifelse(data$Marital_Status == "Married", 1, 0)
+table(data$Marital_Status)
+```
+
+### Principal Component Analysis (PCA)
+
+```{r}
+head(data)
+```
+
+```{r}
+pca = prcomp(data, center = TRUE, scale = TRUE)
+summary(pca)
+```
+
+```{r}
+# create dataframe with only 3 most significant components
+pca_3 = as.data.frame(pca$x[,1:3])
+```
+
+Determine the optimal number of clusters using elbow method:
+
+```{r}
+fviz_nbclust(pca_3, kmeans, method = 'wss')
+```
+
+It seems that there is no significant change in total within sum of square at k = 4, so I are going to use 4 clusters.
+
+### K-Means Clustering
+
+```{r}
+# set the number of clusters
+k = 4
+# plot the cluster plot with PC1, PC2, and PC3
+kmeans_clus = kmeans(pca_3, centers = k, nstart = 50)
+fviz_cluster(kmeans_clus, data = pca_3)
+```
+
+## Evaluating the Clusters
+
+First, let's assign each row in the data to their respective clusters:
+
+```{r}
+data$cluster <- as.factor(kmeans_clus$cluster)
+head(data)
+```
+
+Let's look at the distribution of clusters:
+
+```{r}
+# set colors for consistency
+gg_color_hue <- function(n) {
+  hues = seq(15, 375, length = n + 1)
+  hcl(h = hues, l = 65, c = 100)[1:n]
+}
+n = 4
+cols = gg_color_hue(n)
+
+# distribution of clusters
+ggplot(data, aes(x = cluster)) + geom_bar(alpha = 0.8, fill = cols)
+```
+
+Now, let's look at some univariate plots to give us information about the clusters:
+
+```{r}
+ggplot(data, 
+        aes(x = Total_Spending, 
+            fill = cluster)) +
+   geom_density(alpha = 0.4) +
+   labs(title = "Total spending distribution by cluster",
+        x = "Total Spending")
+```
+
+```{r}
+ggplot(data, 
+       aes(x = cluster, 
+           y = Total_Spending)) +
+  geom_boxplot(fill = cols, alpha = 0.5) +
+  labs(title = "Salary distribution by rank",
+       x = "Clusters",
+       y = "Total Spending")
+```
+
+From the visuals above, it looks like the clusters differ greatly in total spending. Cluster 1 and 4 consists of customers who spent a small amount compared to cluster 2 and 3.
+
+```{r}
+ggplot(data, 
+        aes(x = TotalNumPurchases, 
+            fill = cluster)) +
+   geom_density(alpha = 0.4) +
+   labs(title = "Total # of Purchases by cluster")
+```
+
+```{r}
+ggplot(data, 
+        aes(x = Income, 
+            fill = cluster)) +
+   geom_density(alpha = 0.4) +
+   labs(title = "Income distribution by cluster")
+```
+
+```{r}
+ggplot(data, 
+       aes(x = cluster, 
+           y = Income)) +
+  geom_boxplot(fill = cols, alpha = 0.5) +
+  labs(title = "Salary distribution by rank",
+       x = "Clusters",
+       y = "Income")
+```
+
+The clusters seem to also differ significantly based on income.
+
+```{r}
+ggplot(data, 
+        aes(x = NumWebVisitsMonth, 
+            fill = cluster)) +
+   geom_density(alpha = 0.4) +
+   labs(title = "Web visits by cluster",
+        x = "Number of Website Visits per Month")
+```
+
+It looks like cluster 3 consists of customers who didn't visit the website a lot while cluster 4 contains customers who frequently visited the website.
+
+```{r}
+ggplot(data, 
+        aes(x = Recency, 
+            fill = cluster)) +
+   geom_density(alpha = 0.4) +
+   labs(title = "Recency by cluster",
+        x = "# of days since customers last purchase")
+```
+
+The number of days since the customers last purchase doesn't seem to be a significant differentiating factor between clusters.
+
+```{r}
+ggplot(data, 
+        aes(x = Age, 
+            fill = cluster)) +
+   geom_density(alpha = 0.4) +
+   labs(title = "Age distribution by cluster")
+```
+
+```{r}
+# calculate the mean age for each cluster
+mean_age <- data %>%
+  group_by(cluster) %>%
+  summarize(mean(Age))
+mean_age
+```
+
+Cluster 4 seems to consist of a younger population of customers.
+
+Let's take a look at the education levels of each cluster:
+
+```{r}
+ggplot(data,
+       aes(x = cluster, 
+           fill = as.character(Education))) + 
+  geom_bar(position = position_dodge(preserve = "single")) + 
+  scale_fill_discrete(name = "Education Level",
+                      label = c('Undergraduate', 'Graduate', 'Postgrad'))
+```
+
+It looks like cluster 1 consists of customers were are highly educated while cluster 4 consists of customers who have a relatively low level of education.
+
+```{r}
+ggplot(data,
+       aes(x = cluster, 
+           fill = as.character(Marital_Status))) + 
+  geom_bar(position = position_dodge(preserve = "single")) + 
+  scale_fill_discrete(name = "Marital Status",
+                      label = c('Single', 'Married'))
+```
+
+It doesn't look like there is much differentiation in marital status between the clusters. However, cluster 3 seems to contain a lesser proportion of customers who are married.
+
+Let's see if number of children is significant:
+
+```{r}
+ggplot(data,
+       aes(x = cluster, 
+           fill = as.character(Children))) + 
+  geom_bar(position = position_dodge(preserve = "single")) + 
+  scale_fill_discrete(name = "# of Children")
+```
+
+It looks like cluster 1 contains customers who have more children while cluster 3 contains customers who don't have many children.
+
+Now, let's inspect the total number of accepted promotions per cluster:
+
+```{r}
+ggplot(data,
+       aes(x = cluster, 
+           fill = as.character(TotalAcceptedCmp))) + 
+  geom_bar(position = position_dodge(preserve = "single")) + 
+  scale_fill_discrete(name = "Total Accepted Promos")
+```
+
+Although the number of accepted promotions was underwhelming overall, it seems that cluster 3 contains most of the customers who accepted promotions.
+
+```{r}
+p <- ggplot(data, aes(x = Income,
+                      y = Total_Spending, colour = cluster)) +
+  geom_point(size = 1,
+             alpha = .7) + 
+  labs(x = "Income",
+       y = "Total Spending",
+       title = "Income vs Total Spending")
+
+ggMarginal(p, data, x = Income, y = Total_Spending,
+           type = "density", groupColour = TRUE, groupFill = TRUE)
+```
+
+### Profiling Customer Segments
+
+#### Cluster 1:
+
+-   Low income
+-   Low total spending
+-   Mostly people who have 1 or 2 children
+-   Highly educated
+-   Relatively older population with mean age of 54
+
+#### Cluster 2:
+
+-   Medium income
+-   Medium total spending
+-   Mostly people who have 1 child
+-   Relatively older population with mean age of 54
+
+#### Cluster 3:
+
+-   High income
+-   High total spending
+-   Tend to respond to more marketing campaigns
+-   Mostly people who have no children
+-   Greater proportion of people who are single
+-   Mean age of 46
+-   Don't visit the company website frequently
+
+#### Cluster 4:
+
+-   Low income
+
+-   Low total spending
+
+-   Mostly people who have 1 child
+
+-   Relatively low level of education
+
+-   Relatively younger population with mean age of 40
+
+-   Frequently visit the company website
+
+## Predicting Customer Response to Promotions
+
+Now that I have a good idea of our customer base and that I have segmented them into 4 groups, lets see which customers respond well to promotions.
+
+I am going to predict a customer's response to a marketing campaign using 3 different classification models: Logistic Regression, Boosting, and Random Forest.
+
+Load in the dataset used to perform dimension reduction for clustering:
+
+```{r}
+data <- read.csv("/Users/ryanlee/Desktop/PSTAT 131 Final Project/processed_data.csv")
+head(data)
+```
+
+Remove TotalAcceptedCmp and AcceptedCmp:
+
+```{r}
+del_accep_cmps <- c("AcceptedCmp", "TotalAcceptedCmp")
+data <- data[,!(names(data) %in% del_accep_cmps)]
+head(data)
+```
+
+Change to categorical variables to factors:
+
+```{r}
+names <- c("Education","Marital_Status","AcceptedCmp1",
+           "AcceptedCmp2","AcceptedCmp3","AcceptedCmp4",
+           "AcceptedCmp5","Response")
+data[names] <- lapply(data[names], factor)
+```
+
+#### Data Splitting
+
+I will take the dataset and split it into two subsets: the train and test subset. The training set will be used to fit the machine learning model while the testing/validation set will be used to evaluate the fit of the machine learning model.
+
+For the classification models, I will split the data into 75% train and 25% test sets.
+
+```{r}
+set.seed(3)
+# Sample 75% of observations as the training set
+train = sample(nrow(data), 0.75*nrow(data))
+data.train = data[train, ]
+# The rest 25% as the test set
+data.test = data[-train,]
+# For later convenience in coding, I create data.test, which is the true labels of the # test cases
+Response.test = data.test$Response
+```
+
+### Metrics to Evaluate the Performance of our Models
+
+The model performance metrics that I am going to be focusing on are prediction accuracy, recall, and precision.
+
+[**Prediction Accuracy:**]{.ul}
+
+Accuracy is the fraction of predictions our model got right. It is defined as follows:
+
+$$
+\text{Accuracy} = \frac{\text{# of correct predictions}}{\text{Total # of predictions}}
+$$
+or 
+
+$$
+\text{Accuracy} = \frac{\text{TP} + \text{TN}}{\text{TP} + \text{TN} + \text{FP} + \text{FN}}
+$$
+
+where TP = True Positives, TN = True Negatives, FP = False Positives, and FN = False Negatives.
+
+In this case, accuracy is simply the number of correct predictions on whether or not a customer accepted a campaign promotion over the total number of predictions. This will give us a general sense of how my model performed.
+
+[**Recall:**]{.ul}
+
+Recall is defined as follows:
+
+$$
+\text{Recall} = \frac{\text{TP}}{\text{TP} + \text{FN}}
+$$
+
+In this case, recall is the measure of customers who are correctly predicted to accept a marketing campaign offer out of all the customers who did accept a campaign. This metric will help us make sure I target all customers who are likely to accept a marketing campaign offer.
+
+[**Precision:**]{.ul}
+
+Precision tells us the proportion of positive identifications that are actually correct. It can be defined as follows:
+
+$$
+\text{Precision} = \frac{\text{TP}}{\text{TP} + \text{FP}}
+$$
+
+In this case, precision is the measure of customers who correctly predicted to accept a marketing campaign offer out of all the customers who I merely predicted to accept a marketing campaign offer. If precision is low, it means that the predicted ratio that a customer will accept a campaign many times is incorrect.
+
+Although all of these metrics are going to be important for us to evaluate the performance of our models, I want to focus on recall.
+
+### Logistic Regression
+
+```{r}
+# fit the model
+glm.fit = glm(Response ~ ., data = data.train, family = binomial)
+# summarize the model
+summary(glm.fit)
+# make predictions
+prob.test <- glm.fit %>% predict(data.test, type = "response")
+predicted.response <- ifelse(prob.test > 0.5, "Accepted", "No Response")
+```
+
+#### Interpreting Coefficients
+
+-   From the summary of the fitted logistic regression model, I found that the variables Education, Marital_Status, Recency, NumWebVisitsMonth, Total_Spending, Children, AcceptedCmp1, AcceptedCmp3, and AccpetedCmp5 are statistically significant.
+
+**Holding all other variables fixed...**
+
+-   Someone with an education level of "Postgrad" has 1.6 times (exp(-0.4715)) the odds of someone with an education level of "Graduate" of accepting a marketing campaign offer.
+
+-   Those who are single has a 3.36 times the odds of those who are married of accepting a campaign.
+
+-   For every day since a customer's last purchase, the odds of accepting a promotion reduces by 0.975 times.
+
+-   For every one unit increase in the number of website visits in the last month, the odds of someone accepting a marketing campaign offer increases by 1.265 times.
+
+-   For every one unit increase in the number of children a customer has, the odds of accepting a marketing campaign offer decreases by 0.621 times.
+
+-   For every dollar increase in total spending, the odds of accepting a campaign offer increases by 1.0009 times.
+
+#### Conclusions from the coefficients
+
+-   Single customers have a higher probability of accepting a marketing campaign offer.
+
+-   Those who purchased from the firm more recently have a greater probability of accepting a campaign offer.
+
+-   Customers who accepted offers from the 1st, 3rd, and 5th marketing campaigns have a greater chance of accepting a the next marketing campaign offer. However, the 2nd and 4th marketing campaigns have little to no influence.
+
+-   Customers who visit the website more have a higher probability of accepting a campaign offer.
+
+-   Customers with less children have a higher probability of accepting a campaign offer.
+
+-   Customers who spend more have a higher probability of accepting a campaign offer.
+
+Let's find the optimal threshold value to minimize the False Negative Rate and False Positive Rate. First, let's inspect the ROC curve for this logistic regression model:
+
+```{r}
+pred = prediction(prob.test, data.test$Response)
+# get true positive rate and false positive rate
+perf = performance(pred, measure = "tpr", x.measure = "fpr")
+```
+
+```{r}
+# plot the object obtained above
+plot(perf, col = 2, lwd = 3, main = "ROC curve")
+abline(0,1)
+```
+
+I want the False Negative Rate and False Positive Rate to be as small as possible. This can be controlled by adjusting the threshold value. Let's try to determine the best threshold value by calculating the euclidean distance between each point of (FPR, FNR) and (0,0).
+
+```{r}
+# FPR
+fpr = performance(pred, "fpr")@y.values[[1]] 
+cutoff = performance(pred, "fpr")@x.values[[1]] 
+# FNR
+fnr = performance(pred,"fnr")@y.values[[1]]
+```
+
+```{r}
+# Plot
+matplot(cutoff, cbind(fpr,fnr), type="l",lwd=2, xlab="Threshold",ylab="Error Rate") # Add legend to the plot
+legend(0.3, 1, legend=c("False Positive Rate","False Negative Rate"),
+       col=c(1,2), lty=c(1,2))
+```
+
+Let's calculate the euclidean distance between (FPR, FNR) and (0,0) and find the probability threshold with the smallest euclidean distance:
+
+```{r}
+# calculate the euclidean distance between (FPR, FNR) and (0,0)
+rate = as.data.frame(cbind(Cutoff=cutoff, FPR=fpr, FNR=fnr))
+rate$distance = sqrt((rate[,2])^2+(rate[,3])^2)
+# find the probability threshold with the smallest euclidean distance
+index = which.min(rate$distance)
+best = rate$Cutoff[index]
+best
+```
+
+I found that our best threshold value is 0.139869. Let's compute our performance metrics with this threshold value.
+
+```{r}
+# append column with predicted response for each observation in test data
+pred_data = data.test %>% mutate(predAccept = as.factor(ifelse(prob.test > best, 1, 0)))
+# show confusion matrix
+cm <- table(pred = pred_data$predAccept, true = pred_data$Response)
+cm
+```
+
+```{r}
+# calculate accuracy of model
+accuracy = mean(pred_data$predAccept == pred_data$Response)
+sprintf("Prediction Accuracy: %s", round(accuracy, digits = 3))
+```
+
+```{r}
+# calculate the TPR of our model aka recall
+recall = (cm[2,2] / (cm[2,2] + cm[1,2]))
+sprintf("Recall: %s", round(recall, digits = 3))
+```
+
+```{r}
+# calculate the precision of the model
+precision = (cm[2,2] / (cm[2,2] + cm[2,1]))
+sprintf("Precision: %s", round(precision, digits = 3))
+```
+
+### Boosting
+
+```{r}
+head(data)
+```
+
+```{r}
+set.seed(123)
+boost.response = gbm(as.character(Response)~., data = data.train,
+                 distribution="bernoulli", n.trees=500, interaction.depth=4)
+
+summary(boost.response)
+```
+
+Total_Spending, Income, and Recency are the most influential predictors. I can also create partial dependence plots for these variables which would illustrate the marginal effect of the selected variables on the response after integrating out the other variables. Let's see the trend between total spending and our response variable:
+
+```{r}
+par(mfrow = c(1,2))
+plot(boost.response, i='Total_Spending')
+```
+
+There seems to be a strong positive correlation between total spending and the probability that a customer accepts a marketing campaign offer.
+
+Now, let's at the relationship with the number of days since a customer's last purchase:
+
+```{r}
+plot(boost.response, i= 'Recency')
+```
+
+On the other hand, there seems to be a strong negative correlation with recency. This means that the the more recently a customer has purchased something from the firm, the more probable it is for the customer to accept a marketing campaign.
+
+Lastly, I can use the boosted model to predict on the test set:
+
+```{r}
+yhat.boost = predict(boost.response, newdata = data.test, n.trees=500)
+yhat.boost = ifelse(yhat.boost > 0.5, 1, 0)
+# Confusion matrix
+boost.err = table(pred = yhat.boost, truth = Response.test)
+test.boost.err = 1 - sum(diag(boost.err))/sum(boost.err)
+test.boost.err
+```
+
+The boosting model has an error of about 0.11.
+
+Let's see the confusion matrix:
+
+```{r}
+boost.err
+```
+
+```{r}
+# calculate accuracy of model
+accuracy = mean(yhat.boost == Response.test)
+sprintf("Prediction Accuracy: %s", round(accuracy, digits = 3))
+```
+
+```{r}
+# calculate the TPR of our model aka recall
+recall = (boost.err[2,2] / (boost.err[2,2] + boost.err[1,2]))
+sprintf("Recall: %s", round(recall, digits = 3))
+```
+
+```{r}
+# calculate the precision of the model
+precision = (boost.err[2,2] / (boost.err[2,2] + boost.err[2,1]))
+sprintf("Precision: %s", round(precision, digits = 3))
+```
+
+### Random Forest
+
+```{r}
+set.seed(123)
+rf.response <- randomForest(as.factor(Response)  ~ ., data = data.train, ntree=500, mtry = 4,
+                            importance = TRUE)
+rf.response
+```
+
+Now, let's test our trained model on new data to evaluate the accuracy of our model:
+
+```{r}
+yhat.rf = predict(rf.response, newdata = data.test)
+```
+
+The confusion matrix is a good way of assessing the performance of the classifier when it is presented with new data.
+
+```{r}
+rf.err = table(pred = yhat.rf, truth = Response.test)
+rf.err
+```
+
+```{r}
+set.seed(123)
+# Confusion matrix
+rf.err = table(pred = yhat.rf, truth = data.test$Response)
+test.rf.err = 1 - sum(diag(rf.err))/sum(rf.err)
+test.rf.err
+```
+
+The test set error rate is 0.09963768. This indicates that this model's accuracy is a great improvement.
+
+```{r}
+accuracy = mean(yhat.rf == Response.test)
+sprintf("Prediction Accuracy: %s", round(accuracy, digits = 3))
+```
+
+```{r}
+# calculate the TPR of our model aka recall
+recall = (rf.err[2,2] / (rf.err[2,2] + rf.err[1,2]))
+sprintf("Recall: %s", round(recall, digits = 3))
+```
+
+```{r}
+# calculate the precision of the model
+precision = (rf.err[2,2] / (rf.err[2,2] + rf.err[2,1]))
+sprintf("Precision: %s", round(precision, digits = 3))
+```
+
+```{r}
+plot(rf.response)
+```
+
+From the plot, out of 500 trees, improvement steadies out as the number of trees increase.
+
+Now, let's inspect the influence that each variable has on this model:
+
+```{r}
+importance(rf.response)
+```
+
+```{r}
+varImpPlot(rf.response, sort=T, main="Variable Importance for rf.response")
+```
+
+From the importance() function and varImpPlot(), I was able to both quantify and visualize the importance of each variable. From both the table and plot, the Mean Decrease Accuracy and Mean Decrease Gini can be measured. The Mean Decrease Accuracy shows how much the model accuracy decreases if the variable is left out. The Mean Decrease Gini is a measure of variable importance based on the Gini impurity index used for calculating the splits in trees.
+
+From the MeanDecreaseAccuracy, I see that the top five important variables in determining a customer's response to a promotion are "AcceptedCmp3", "Total_Spending", "AcceptedCmp1", "Recency", and "Income".
+
+From the MeanDecreaseGini, I see that the top five important variables are "Total_Spending", "Recency", "Income", "Age", and "TotalNumPurchases".
+
+Together, from this information, the variables that determine a customer's response to a promotion are "Total_Spending", "Recency", "Income", "TotalNumPurchases", and "AccetedCmp3". This indicates that the most significant factors in determining a customers' response to a promotion are if that customer has responded to or accepted promotions before, their total number of purhcases, their income, their total spending, and the days since they've become a member.
+
+```{r}
+varImpPlot(rf.response, sort=T, main="Top 5 Variables' Importance for rf.response", n.var=5)
+```
+
+Here, I can visualize the top five variables' importance in determining a customer's response to a promotion or campaign.
+
+#### Repeated K-fold cross-validation
+
+I perform k-fold cross validation using 10-fold cross validation across different tuning parameters.
+
+```{r}
+# generates parameters that further 
+# control how models are created
+train_control <- trainControl(method = "cv", number = 10)
+ 
+# building the model and predicting the target variable as per the random forest
+model <- train(as.factor(Response)  ~ ., data = data.train, trControl = train_control,
+               method = "rf")
+```
+
+```{r}
+print(model)
+```
+
+The algorithm uses 500 trees and tested 3 different values of mtry: 2, 8, and 15.
+
+The final value that was used selected as the optimal model was mtry=8, so eight random variables were used in each tree.
+
+Thus, we can see that the best mtry to use is mtry = 8.
+
+```{r}
+model$bestTune$mtry
+```
+
+Using the best mtry value, mtry = 8, I can remake the random forest model with mtry = 8.
+
+```{r}
+set.seed(123)
+rf.response8 <- randomForest(as.factor(Response)  ~ ., data = data.train, ntree=500, mtry = 8,
+                            importance = TRUE)
+```
+
+Although I have adjusted the value of mtry, the OOB estimate of the error rate is still around the same, with a decrease in 0.06% in error.
+
+Now, let's predict on the model with mtry = 8:
+
+```{r}
+yhat.rf = predict(rf.response8, newdata = data.test)
+rf.err = table(pred = yhat.rf, truth = Response.test)
+rf.err
+```
+
+```{r}
+set.seed(123)
+# Confusion matrix
+rf.err = table(pred = yhat.rf, truth = data.test$Response)
+test.rf.err = 1 - sum(diag(rf.err))/sum(rf.err)
+test.rf.err
+```
+
+It seems that the test error increases slightly.
+
+```{r}
+accuracy = mean(yhat.rf == Response.test)
+sprintf("Prediction Accuracy: %s", round(accuracy, digits = 3))
+```
+
+```{r}
+# calculate the TPR of our model aka recall
+recall = (rf.err[2,2] / (rf.err[2,2] + rf.err[1,2]))
+sprintf("Recall: %s", round(recall, digits = 3))
+```
+
+However, recall has a slight improvement.
+
+```{r}
+# calculate the precision of the model
+precision = (rf.err[2,2] / (rf.err[2,2] + rf.err[2,1]))
+sprintf("Precision: %s", round(precision, digits = 3))
+```
+
+From the confusion matrix, I found that our Random Forest Model has 89.7% accuracy, 71.4% precision, and 49.4% recall.
+
+This indicates that the accuracy of our random forest classifier is high. The recall percentage is a bit low, but model still shows a higher precision, which further indicates that my classifier can successfully find customers that would be willing to respond to promotions, but it can sometimes miss a few since it is quite selective.
+
+**The total amount spent on products** are very highly correlated with whether the customer responded to the marketing campaign.
+
+In the end, I found that **Income and Total Amount Spent are very correlated**. Customers who earn more spend more.
+
+**Customers who have recently purchased something are more likely to respond** to the marketing campaign. This makes senses because when a customer has more recent purchases they have more of a probable pattern of shopping at the store.
+
+# Summary
+
+This section summarizes my project and highlights several key findings. My goal is to use machine learning models on a set of marketing data to assist with customer segmentation and prediction of a customer's response to a firm's marketing campaigns.
+
+I achieved this in two parts (objectives):
+
+1.  Group customers based on demographic and lifestyle/behavioral data
+
+2.  Use classification models to predict which customers respond to marketing campaigns
+
+### Part 1
+
+![](https://lh5.googleusercontent.com/qWlahaSIJWilqVXuCTnECPr1GBuaPYGY2YnI87RP1Fab5Qo0qGaBBnc-pgzQlSaf7wPt9U6pRKKgRtXrBzx4_i_ykM37z66i_KsAOizjMqxtcwANDZd8oa8OdIdZG8rici0avRKt){width="539"}
+
+Above is a visual of how my clusters are distributed on an income vs total spending scatter plot. However, the clusters are much more complex than what a simple two dimensional visual can show. Below is a table of the 4 customer segments I found, and their traits.
+
++----------------------+---------------------------+-------------------------------------+----------------------------------+---------------------------------+
+|                      | Cluster 1                 | Cluster 2                           | Cluster 3                        | Cluster 4                       |
++======================+===========================+=====================================+==================================+=================================+
+| Demographic          | Mean income of \~\$40k\   | Mean income of \~\$62k\             | Mean income of \~\$78k           | Mean income of \~\$30k          |
+|                      |                           |                                     |                                  |                                 |
+|                      | 1 or 2 children           | 1 child                             | No children                      | 1 child                         |
+|                      |                           |                                     |                                  |                                 |
+|                      | Highly educated           | Mean age of 54                      | Single status                    | Mostly undergraduate education\ |
+|                      |                           |                                     |                                  |                                 |
+|                      | Mean age of 54            | Mostly graduate/post grad education | Mean age of 46                   | Mean age of 40                  |
+|                      |                           |                                     |                                  |                                 |
+|                      |                           |                                     | Mostly graduate education        |                                 |
++----------------------+---------------------------+-------------------------------------+----------------------------------+---------------------------------+
+| Lifestyle/Behavioral | Low total spending        | Medium total spending               | Responds to marketing campaigns\ | Low total spending\             |
+|                      |                           |                                     |                                  | \                               |
+|                      | Frequently visits website | Moderate visits to company website  | Highest total spending           |                                 |
+|                      |                           |                                     |                                  | Frequently visits website       |
+|                      |                           |                                     | Don't visit the company website  |                                 |
++----------------------+---------------------------+-------------------------------------+----------------------------------+---------------------------------+
+
+### Part 2
+
+With a better understanding of what my different customer segments look like, I then predicted which customers respond well to marketing campaign promotions by using 3 classification models: Logistic Regression, Boosting, and Random Forest.
+
+I used a 75% train and 25% test set split for my classification models.
+
++-------------------------------+---------------------------------------------------------------------------------------------------------------------------+---------------------------------+-----------------------------------------------------------------+
+|                               | Logistic Regression                                                                                                       | Boosting                        | Random Forest                                                   |
++===============================+===========================================================================================================================+=================================+=================================================================+
+| **Accuracy**                  | 78.3%                                                                                                                     | 89.3%                           | 89.7%                                                           |
++-------------------------------+---------------------------------------------------------------------------------------------------------------------------+---------------------------------+-----------------------------------------------------------------+
+| **Precision**                 | 38.2%                                                                                                                     | 72.0%                           | 71.4%                                                           |
++-------------------------------+---------------------------------------------------------------------------------------------------------------------------+---------------------------------+-----------------------------------------------------------------+
+| **Recall**                    | 77.8%                                                                                                                     | 44.4%                           | 49.4%                                                           |
++-------------------------------+---------------------------------------------------------------------------------------------------------------------------+---------------------------------+-----------------------------------------------------------------+
+| **Most Significant Features** | Education, Marital_Status, Recency, NumWebVisitsMonth, Total_Spending, Children, AcceptedCmp1, AcceptedCmp3, AccpetedCmp5 | Total_Spending, Income, Recency | Total_Spending, Recency, Income, TotalNumPurchases, AccetedCmp3 |
++-------------------------------+---------------------------------------------------------------------------------------------------------------------------+---------------------------------+-----------------------------------------------------------------+
+
+#### Our Best Fitting Model
+
+Because I was focusing on recall, my best fitting model turned out to be the logistic regression model. Although the boosting and random forest models had better prediction accuracy, I placed extra importance in recall as I wanted to ensure that our model didn't miss any customer who would have accepted a campaign and give more leeway for models to predict that a customer will accept a campaign incorrectly.
+
+**Overall Key Findings:**
+
+-   The total amount spent on products are strongly positively correlated with whether the customer responded to the marketing campaign.
+
+-   Income and Total Amount Spent are very correlated. Customers who earn more spend more.
+
+-   Customers who have recently purchased something are more likely to respond to the marketing campaign. This makes sense because when a customer has more recent purchases they have more of a probable pattern of shopping at the store.
+
+-   Single customers are more likely to respond to a marketing campaign. In addition, customers who have less children are more likely to respond to a marketing campaign. This can be because people who have less dependents have more money to spend.
+
+-   Age had little to no correlation to whether or not a customer responded to a marketing campaign.
+
+#### Conclusion
+
+I believe I was able to extract valuable insights about the firm's customers through the analysis and modeling of this project. I hope the customer segmentation and predictive models can help the firm develop tailored marketing strategies for their customers and assist in performing strategic marketing.
+
+To improve upon the prediction of my models, I hope to include some of the variables that were removed in the feature engineering portion of this project. I especially think that the spending of the individual products would be good variables to explore. I would also like to improve on the recall scores of the boosting and random forest models. Through training the models, I discovered that there is a trade off with prediction accuracy and recall, so training the model in a way that would improve the recall scores at the cost of some prediction accuracy would be beneficial due to the high prediction accuracies I was able to obtain with our models.
+
+
